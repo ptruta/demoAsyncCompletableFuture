@@ -99,13 +99,18 @@ public class AsyncSyncApplication {
         CompletableFuture<Quotation> bestQuotation = runAsyncAllOf();
         CompletableFuture<Weather> anyWeather = runAsynAnyOf();
 
-        TravelPage travelPage = new TravelPage(bestQuotation.join(), anyWeather.join()); // asta
+//        TravelPage travelPage = new TravelPage(bestQuotation.join(), anyWeather.join()); // asta
 
         CompletableFuture<TravelPage> travelPageCompletableFuture = bestQuotation.thenCombine(anyWeather, TravelPage::new);// sau asta
+        //asta de sus
 
-        travelPageCompletableFuture.thenAccept(System.out::println).join();
+        travelPageCompletableFuture.thenAccept(System.out::println).join(); // daca ceva se intampla cu bestAuotation thenCompose o sa
+        //arunce o exceptie
 
-        System.out.println("page " + travelPage);
+        bestQuotation.thenCompose(quotation -> anyWeather
+                .thenApply(weather -> new TravelPage(quotation, weather)));// au sta fac la fel
+
+        System.out.println("page " + travelPageCompletableFuture);
 
     }
 
