@@ -2,6 +2,7 @@ package com.example.demo;
 
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Profile;
+import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -9,108 +10,82 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.function.Supplier;
 
+import static com.example.demo.AsyncSyncApplication.runAsynAnyOf;
+
 @SpringBootApplication
-@Profile("async-weather")
-public class AsyncSyncApplication {
+@Profile("executor-threads")
+public class ExecutorThreadsApplication {
+
+    private static ThreadFactory quotationThreadFactory = new CustomizableThreadFactory();
+    private static ThreadFactory weatherThreadFactory = new CustomizableThreadFactory();
+    private static ThreadFactory minThreadFactory = new CustomizableThreadFactory();
 
     public static void main(String[] args) throws Exception {
-//        runAsyncAllOf();
-//        runAsynAnyOf();
-        doRun();
+        doRunExecutorService();
     }
 
-    static CompletableFuture<Weather> runAsynAnyOf() {
+    private static void doRunExecutorService() {
+
+        ExecutorService quotationExecutor = Executors.newFixedThreadPool(4, quotationThreadFactory);
+        ExecutorService weatherExecutor = Executors.newFixedThreadPool(4, weatherThreadFactory);
+        ExecutorService minExecutor = Executors.newFixedThreadPool(4, minThreadFactory);
 
         Random random = new Random();
 
         List<Supplier<Weather>> weatherTasks = buildWeatherTasks(random);
-
-        List<CompletableFuture<Weather>> weatherCFS = new ArrayList<>();
-        for (Supplier<Weather> task : weatherTasks) {
-            CompletableFuture<Weather> future = CompletableFuture.supplyAsync(task);
-            weatherCFS.add(future);
-        }
-
-//        CompletableFuture<Object> future = CompletableFuture.anyOf(weatherCFS.toArray(
-//                new CompletableFuture[weatherCFS.size()]));
-//
-//        future.thenAccept(System.out::println).join();
-
-        return CompletableFuture.anyOf(weatherCFS.toArray(
-                new CompletableFuture[weatherCFS.size()])).thenApply(o -> (Weather) o);
-
-    }
-
-    private static CompletableFuture<Quotation> runAsyncAllOf() {
-        Random random = new Random();
-
         List<Supplier<Quotation>> quotationTasks = buildQuotationTasks(random);
 
-        List<CompletableFuture<Quotation>> quotationCFS = new ArrayList<>();
-        for (Supplier<Quotation> task : quotationTasks) {
-            CompletableFuture<Quotation> future = CompletableFuture.supplyAsync(task);
-            quotationCFS.add(future);
+        List<CompletableFuture<Weather>> weatherCFs = new ArrayList<>();
+
+        for (Supplier<Weather> weatherTask : weatherTasks) {
+            CompletableFuture<Weather> weatherCF = CompletableFuture.supplyAsync(weatherTask);
+            weatherCFs.add(weatherCF);
         }
 
-        CompletableFuture<Void> allOf = CompletableFuture.allOf(quotationCFS.toArray(
-                new CompletableFuture[quotationCFS.size()]));
+        List<CompletableFuture<Quotation>> quotationCFs = new ArrayList<>();
 
-//        CompletableFuture<Quotation> bestQuotation =
-//                allOf.thenApply(
-//                v -> {
-////                    System.out.println("v = " + v);
-////                    return null;
-//                    try {
-//                       return quotationCFS.stream()
-//                                .map(CompletableFuture::join)
-//                                .min(Comparator.comparing(Quotation::getInteger))
-//                                .orElseThrow(Exception::new);
-//                    } catch (Exception e) {
-//                        throw new RuntimeException(e);
-//                    }
-//                }
-//        );
+        for (Supplier<Quotation> quotationTask : quotationTasks) {
+            CompletableFuture<Quotation> quotationCompletableFuture =
+                    CompletableFuture.supplyAsync(quotationTask, quotationExecutor);
+            quotationCFs.add(quotationCompletableFuture);
+        }
 
-//        System.out.println("bestQuotation = " + bestQuotation);
+        CompletableFuture<Void> allOfQuotations =
+                CompletableFuture.allOf(quotationCFs.toArray(new CompletableFuture[quotationCFs.size()]));
 
-
-        return
-                allOf.thenApply(
+        CompletableFuture<Quotation> bestQuotationCf =
+                allOfQuotations.thenApplyAsync(
                         v -> {
-//                    System.out.println("v = " + v);
-//                    return null;
+                            System.out.println("AllOf then apply" + Thread.currentThread());
                             try {
-                                return quotationCFS.stream()
+                                return quotationCFs.stream()
                                         .map(CompletableFuture::join)
                                         .min(Comparator.comparing(Quotation::getInteger))
                                         .orElseThrow(Exception::new);
                             } catch (Exception e) {
                                 throw new RuntimeException(e);
                             }
-                        }
+                        },
+                        minExecutor
                 );
 
-    }
-
-    public static void doRun() {
-
-        CompletableFuture<Quotation> bestQuotation = runAsyncAllOf();
         CompletableFuture<Weather> anyWeather = runAsynAnyOf();
+        CompletableFuture<Void> done =
+                bestQuotationCf.thenCompose(
+                        quotation -> anyWeather
+                                .thenApply(weather -> new TravelPage(quotation, weather))
+                                .thenAccept(System.out::println));
 
-//        TravelPage travelPage = new TravelPage(bestQuotation.join(), anyWeather.join()); // asta
+        done.join();
 
-        CompletableFuture<TravelPage> travelPageCompletableFuture = bestQuotation.thenCombine(anyWeather, TravelPage::new);// sau asta
-        //asta de sus
-
-        travelPageCompletableFuture.thenAccept(System.out::println).join(); // daca ceva se intampla cu bestAuotation thenCompose o sa
-        //arunce o exceptie
-
-        bestQuotation.thenCompose(quotation -> anyWeather
-                .thenApply(weather -> new TravelPage(quotation, weather)));// au sta fac la fel
-
-        System.out.println("page " + travelPageCompletableFuture);
+        quotationExecutor.shutdown();
+        weatherExecutor.shutdown();
+        minExecutor.shutdown();
 
     }
 
@@ -175,6 +150,4 @@ public class AsyncSyncApplication {
 
         return Arrays.asList(fetchQuotationA, fetchQuotationB, fetchQuotationC);
     }
-
-
 }
